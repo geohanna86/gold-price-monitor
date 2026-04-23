@@ -1489,24 +1489,56 @@ def _load_performance_data(tracker_path: str) -> tuple:
         return None, None
 
 
+_SIM_STATE_FILE = Path(__file__).parent / "simulator_state.json"
+
+def _sim_save():
+    """يحفظ حالة السيميوليتر في ملف JSON — يبقى بعد أي refresh."""
+    try:
+        state = {
+            "balance":  st.session_state.sim_balance,
+            "trades":   st.session_state.sim_trades,
+            "history":  st.session_state.sim_history,
+            "trade_id": st.session_state.sim_trade_id,
+        }
+        with open(_SIM_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def _sim_load():
+    """يحمّل الحالة المحفوظة — إذا ما في ملف يبدأ من صفر."""
+    if "sim_balance" in st.session_state:
+        return  # محمّل من قبل في نفس الجلسة
+    try:
+        if _SIM_STATE_FILE.exists():
+            with open(_SIM_STATE_FILE, "r", encoding="utf-8") as f:
+                s = json.load(f)
+            st.session_state.sim_balance  = float(s.get("balance",  10_000.0))
+            st.session_state.sim_trades   = s.get("trades",   [])
+            st.session_state.sim_history  = s.get("history",  [])
+            st.session_state.sim_trade_id = int(s.get("trade_id", 1))
+            return
+    except Exception:
+        pass
+    # قيم افتراضية
+    st.session_state.sim_balance  = 10_000.0
+    st.session_state.sim_trades   = []
+    st.session_state.sim_history  = []
+    st.session_state.sim_trade_id = 1
+
+
 @st.fragment(run_every="5s")
 def _render_simulator_tab(data: dict):
     """
     Pestaña de simulador de trading con balance virtual.
     Permite abrir/cerrar operaciones BUY/SELL usando el precio real en vivo.
     P&L calculado en USD: 1 lot = 100 oz de oro.
+    Estado persistido en simulator_state.json → sobrevive recargas de página.
     """
     import streamlit.components.v1 as components
 
-    # ── Inicializar session_state ────────────────────────────────────────────
-    if "sim_balance" not in st.session_state:
-        st.session_state.sim_balance   = 10_000.0   # capital virtual
-    if "sim_trades" not in st.session_state:
-        st.session_state.sim_trades    = []          # posiciones abiertas
-    if "sim_history" not in st.session_state:
-        st.session_state.sim_history   = []          # historial cerrado
-    if "sim_trade_id" not in st.session_state:
-        st.session_state.sim_trade_id  = 1
+    # ── Cargar estado (desde archivo o inicializar) ──────────────────────────
+    _sim_load()
 
     # ── Precio actual ────────────────────────────────────────────────────────
     mode = data.get("mode", "live")
@@ -1556,6 +1588,7 @@ def _render_simulator_tab(data: dict):
             st.session_state.sim_trades.remove(tr)
     if closed_auto:
         reasons = ", ".join(f"{t['close_reason']} #{t['id']}" for t in closed_auto)
+        _sim_save()
         st.toast(f"Posición cerrada automáticamente: {reasons}", icon="⚡")
 
     total_open_pnl = sum(t["pnl"] for t in st.session_state.sim_trades)
@@ -1653,6 +1686,7 @@ def _render_simulator_tab(data: dict):
             }
             st.session_state.sim_trades.append(new_trade)
             st.session_state.sim_trade_id += 1
+            _sim_save()
             st.toast(f"✅ {trade_type} abierto a ${live_price:,.2f}", icon="📂")
             st.rerun()
 
@@ -1710,6 +1744,7 @@ def _render_simulator_tab(data: dict):
                     st.session_state.sim_balance += pnl
                     st.session_state.sim_history.insert(0, tr)
                     st.session_state.sim_trades.remove(tr)
+                    _sim_save()
                     sign = "ganaste" if pnl >= 0 else "perdiste"
                     st.toast(f"Posición #{tr['id']} cerrada — {sign} ${abs(pnl):,.2f}", icon="💰")
                     st.rerun()
@@ -1728,6 +1763,7 @@ def _render_simulator_tab(data: dict):
             st.session_state.sim_trades   = []
             st.session_state.sim_history  = []
             st.session_state.sim_trade_id = 1
+            _sim_save()
             st.toast("Simulador reiniciado — balance restablecido a $10,000", icon="🔄")
             st.rerun()
 
