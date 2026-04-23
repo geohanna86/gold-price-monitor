@@ -1471,6 +1471,7 @@ def _load_performance_data(tracker_path: str) -> tuple:
         return None, None
 
 
+@st.fragment(run_every="5s")
 def _render_simulator_tab(data: dict):
     """
     Pestaña de simulador de trading con balance virtual.
