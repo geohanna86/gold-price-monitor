@@ -1,0 +1,3 @@
+XZYH5AGDROT0KKUR    (Alpha Vantage)
+
+68b7b3f94d7844f2afd4cee69268c982     (NewsAPI)
