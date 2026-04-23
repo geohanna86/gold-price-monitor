@@ -459,17 +459,35 @@ def _get_next_event_str() -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# جلب السعر الحي من yfinance (1m interval) — أقل تأخيراً
+# جلب السعر الحي — Yahoo Finance raw API (بدون تأخير yfinance)
 # ─────────────────────────────────────────────────────────────
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner=False)
 def _get_live_price(mode: str) -> tuple:
     """
     يرجع (سعر_حي, مصدر_النص).
-    في live mode: يجيب آخر دقيقة من yfinance → تأخير < 2 دقيقة.
-    في mock mode: يرجع None عشان نستخدم سعر الموديل.
+    يستخدم Yahoo Finance raw API → regularMarketPrice (أحدث من yfinance wrapper).
+    TTL=10s عشان السيميوليتر يشتغل بسعر قريب من الحقيقي.
     """
     if mode != "live":
         return None, "mock"
+    import requests as _req
+    # ── المحاولة الأولى: Yahoo raw API (لا تأخير) ──────────────
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = _req.get(
+            "https://query1.finance.yahoo.com/v8/finance/chart/GC=F",
+            params={"interval": "1m", "range": "2m"},
+            headers=headers,
+            timeout=5,
+        )
+        if r.status_code == 200:
+            meta  = r.json()["chart"]["result"][0]["meta"]
+            price = float(meta["regularMarketPrice"])
+            ts    = datetime.now().strftime("%H:%M:%S")
+            return price, f"Yahoo live · {ts}"
+    except Exception:
+        pass
+    # ── الاحتياطي: yfinance 1m ──────────────────────────────────
     try:
         import yfinance as yf
         df = yf.download("GC=F", period="1d", interval="1m",
