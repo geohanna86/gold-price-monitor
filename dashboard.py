@@ -170,6 +170,23 @@ def load_model_and_data(mode: str = "mock", n_rows: int = 500):
     bt_res = bt.run(test_prices, results.signals)
     trades_df = bt.get_trades_df()
 
+    # ── بناء dict الإشارة الأخيرة (للسيميوليتر وغيره) ────────────
+    last_sig_val  = int(results.signals.iloc[-1])
+    last_close    = float(df_ind["Close"].iloc[-1])
+    atr_val       = float(df_ind["ATR"].iloc[-1]) if "ATR" in df_ind.columns else 20.0
+    if last_sig_val == 1:    # BUY
+        sig_sl = last_close - (atr_val * 1.5)
+        sig_tp = last_close + (atr_val * 2.5)
+        sig_action = "BUY"
+    elif last_sig_val == -1: # SELL
+        sig_sl = last_close + (atr_val * 1.5)
+        sig_tp = last_close - (atr_val * 2.5)
+        sig_action = "SELL"
+    else:
+        sig_sl = last_close - (atr_val * 1.5)
+        sig_tp = last_close + (atr_val * 2.5)
+        sig_action = "HOLD"
+
     return {
         "df_ind":    df_ind,
         "df_feat":   df_feat,
@@ -177,6 +194,11 @@ def load_model_and_data(mode: str = "mock", n_rows: int = 500):
         "bt_res":    bt_res,
         "trades_df": trades_df,
         "ensemble":  ensemble,
+        "signal": {
+            "action": sig_action,
+            "sl":     round(sig_sl, 2),
+            "tp":     round(sig_tp, 2),
+        },
     }
 
 
@@ -539,10 +561,17 @@ def _render_signal_cards(data: dict, news_score: float = 0.0):
 
     sig_text = sig_map.get(last_sig, "NEUTRAL ⚪")
 
-    # Calcular SL/TP
+    # Calcular SL/TP según dirección de la señal
     atr_val = df_ind["ATR"].iloc[-1] if "ATR" in df_ind.columns else 20.0
-    sl_price = last_price - (atr_val * 1.5)
-    tp_price = last_price + (atr_val * 2.5)
+    if last_sig == 1:    # BUY  → SL abajo, TP arriba
+        sl_price = last_price - (atr_val * 1.5)
+        tp_price = last_price + (atr_val * 2.5)
+    elif last_sig == -1: # SELL → SL arriba, TP abajo
+        sl_price = last_price + (atr_val * 1.5)
+        tp_price = last_price - (atr_val * 2.5)
+    else:                # NEUTRAL
+        sl_price = last_price - (atr_val * 1.5)
+        tp_price = last_price + (atr_val * 2.5)
     rr_ratio = abs(tp_price - last_price) / abs(last_price - sl_price) if (last_price - sl_price) != 0 else 0
 
     st.markdown("## 🥇 Gold Price Monitor — Panel de Control Integral")
