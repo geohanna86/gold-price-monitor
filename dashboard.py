@@ -1471,6 +1471,289 @@ def _load_performance_data(tracker_path: str) -> tuple:
         return None, None
 
 
+def _render_simulator_tab(data: dict):
+    """
+    Pestaña de simulador de trading con balance virtual.
+    Permite abrir/cerrar operaciones BUY/SELL usando el precio real en vivo.
+    P&L calculado en USD: 1 lot = 100 oz de oro.
+    """
+    import streamlit.components.v1 as components
+
+    # ── Inicializar session_state ────────────────────────────────────────────
+    if "sim_balance" not in st.session_state:
+        st.session_state.sim_balance   = 10_000.0   # capital virtual
+    if "sim_trades" not in st.session_state:
+        st.session_state.sim_trades    = []          # posiciones abiertas
+    if "sim_history" not in st.session_state:
+        st.session_state.sim_history   = []          # historial cerrado
+    if "sim_trade_id" not in st.session_state:
+        st.session_state.sim_trade_id  = 1
+
+    # ── Precio actual ────────────────────────────────────────────────────────
+    mode = data.get("mode", "live")
+    live_price, live_src = _get_live_price(mode)
+    if live_price is None:
+        df = data.get("df_ind")
+        live_price = float(df["Close"].iloc[-1]) if df is not None and len(df) > 0 else 0.0
+        live_src   = "model"
+
+    # ── Calcular P&L flotante de posiciones abiertas ─────────────────────────
+    def _calc_pnl(trade):
+        lots  = trade["lots"]
+        ep    = trade["entry_price"]
+        if trade["type"] == "BUY":
+            return round((live_price - ep) * lots * 100, 2)
+        else:
+            return round((ep - live_price) * lots * 100, 2)
+
+    # verificar SL/TP automático en cada refresh
+    closed_auto = []
+    for tr in list(st.session_state.sim_trades):
+        pnl = _calc_pnl(tr)
+        tr["pnl"] = pnl
+        # SL hit
+        if tr["sl"] is not None:
+            if (tr["type"] == "BUY"  and live_price <= tr["sl"]) or \
+               (tr["type"] == "SELL" and live_price >= tr["sl"]):
+                tr["close_price"] = live_price
+                tr["close_time"]  = datetime.now().strftime("%H:%M:%S")
+                tr["close_reason"]= "🛑 SL"
+                st.session_state.sim_balance += tr["pnl"]
+                st.session_state.sim_history.insert(0, tr)
+                closed_auto.append(tr)
+        # TP hit
+        if tr["tp"] is not None:
+            if (tr["type"] == "BUY"  and live_price >= tr["tp"]) or \
+               (tr["type"] == "SELL" and live_price <= tr["tp"]):
+                tr["close_price"] = live_price
+                tr["close_time"]  = datetime.now().strftime("%H:%M:%S")
+                tr["close_reason"]= "🎯 TP"
+                st.session_state.sim_balance += tr["pnl"]
+                st.session_state.sim_history.insert(0, tr)
+                closed_auto.append(tr)
+
+    for tr in closed_auto:
+        if tr in st.session_state.sim_trades:
+            st.session_state.sim_trades.remove(tr)
+    if closed_auto:
+        reasons = ", ".join(f"{t['close_reason']} #{t['id']}" for t in closed_auto)
+        st.toast(f"Posición cerrada automáticamente: {reasons}", icon="⚡")
+
+    total_open_pnl = sum(t["pnl"] for t in st.session_state.sim_trades)
+    equity         = st.session_state.sim_balance + total_open_pnl
+
+    # ────────────────────────────────────────────────────────────────────────
+    # ENCABEZADO
+    # ────────────────────────────────────────────────────────────────────────
+    st.markdown("## 🎮 Simulador de Trading — Paper Trading")
+    st.caption("Practica con dinero virtual usando el precio real del mercado. Sin riesgo real.")
+
+    # ── Métricas principales ─────────────────────────────────────────────────
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("💰 Balance", f"${st.session_state.sim_balance:,.2f}")
+    m2.metric("📊 Equity",  f"${equity:,.2f}",
+              delta=f"{equity - 10_000:.2f}" if equity != st.session_state.sim_balance else None)
+    pnl_color = "normal" if total_open_pnl >= 0 else "inverse"
+    m3.metric("📈 P&L Abierto", f"${total_open_pnl:,.2f}", delta=f"{total_open_pnl:.2f}")
+    m4.metric("🔢 Posiciones", len(st.session_state.sim_trades))
+    m5.metric("💵 Precio Vivo", f"${live_price:,.2f}", help=live_src)
+
+    st.markdown("---")
+
+    # ────────────────────────────────────────────────────────────────────────
+    # PANEL DE APERTURA
+    # ────────────────────────────────────────────────────────────────────────
+    st.markdown("### 📂 Abrir Nueva Posición")
+
+    # Sugerencia del modelo
+    signal_action = data.get("signal", {}).get("action", "HOLD")
+    sl_suggest    = data.get("signal", {}).get("sl")
+    tp_suggest    = data.get("signal", {}).get("tp")
+
+    if signal_action in ("BUY", "SELL"):
+        sig_icon = "🟢" if signal_action == "BUY" else "🔴"
+        st.info(f"{sig_icon} El modelo recomienda **{signal_action}** ahora — "
+                f"SL sugerido: **${sl_suggest:,.2f}** | TP sugerido: **${tp_suggest:,.2f}**")
+
+    col_type, col_lots, col_sl, col_tp = st.columns([1, 1, 1, 1])
+
+    with col_type:
+        trade_type = st.selectbox("Tipo", ["BUY", "SELL"], key="sim_type",
+                                  index=0 if signal_action == "BUY" else 1)
+    with col_lots:
+        lot_options = [0.01, 0.05, 0.10, 0.25, 0.50, 1.00]
+        lots = st.selectbox("Lote", lot_options, index=2, key="sim_lots",
+                            help="1 lote = 100 oz | 0.1 lote = 10 oz")
+    with col_sl:
+        sl_default = float(sl_suggest) if sl_suggest else (
+            round(live_price - 50, 2) if trade_type == "BUY" else round(live_price + 50, 2)
+        )
+        use_sl = st.checkbox("SL", value=True, key="sim_use_sl")
+        sl_val = st.number_input("Precio SL", value=sl_default, step=1.0,
+                                  format="%.2f", key="sim_sl",
+                                  disabled=not use_sl, label_visibility="collapsed")
+    with col_tp:
+        tp_default = float(tp_suggest) if tp_suggest else (
+            round(live_price + 100, 2) if trade_type == "BUY" else round(live_price - 100, 2)
+        )
+        use_tp = st.checkbox("TP", value=True, key="sim_use_tp")
+        tp_val = st.number_input("Precio TP", value=tp_default, step=1.0,
+                                  format="%.2f", key="sim_tp",
+                                  disabled=not use_tp, label_visibility="collapsed")
+
+    # Cálculo de margen estimado (simple: precio * lote * 100 / apalancamiento 100:1)
+    margin_est = round(live_price * lots * 100 / 100, 2)
+    rr_ratio   = None
+    if use_sl and use_tp:
+        risk   = abs(live_price - sl_val)  * lots * 100
+        reward = abs(tp_val - live_price)  * lots * 100
+        rr_ratio = reward / risk if risk > 0 else None
+
+    info_cols = st.columns([2, 2, 2, 1])
+    info_cols[0].caption(f"📌 Entrada: **${live_price:,.2f}**")
+    info_cols[1].caption(f"🔒 Margen est.: **${margin_est:,.2f}**")
+    if rr_ratio:
+        info_cols[2].caption(f"⚖️ R/R: **1 : {rr_ratio:.2f}**")
+
+    # Botón de apertura
+    btn_color = "🟢" if trade_type == "BUY" else "🔴"
+    if st.button(f"{btn_color} Abrir {trade_type} — {lots} lote(s) a ${live_price:,.2f}",
+                 use_container_width=True, type="primary", key="sim_open_btn"):
+        if margin_est > st.session_state.sim_balance:
+            st.error("❌ Balance insuficiente para cubrir el margen.")
+        else:
+            new_trade = {
+                "id":          st.session_state.sim_trade_id,
+                "type":        trade_type,
+                "entry_price": live_price,
+                "lots":        lots,
+                "sl":          sl_val if use_sl else None,
+                "tp":          tp_val if use_tp else None,
+                "open_time":   datetime.now().strftime("%H:%M:%S"),
+                "pnl":         0.0,
+            }
+            st.session_state.sim_trades.append(new_trade)
+            st.session_state.sim_trade_id += 1
+            st.toast(f"✅ {trade_type} abierto a ${live_price:,.2f}", icon="📂")
+            st.rerun()
+
+    st.markdown("---")
+
+    # ────────────────────────────────────────────────────────────────────────
+    # POSICIONES ABIERTAS
+    # ────────────────────────────────────────────────────────────────────────
+    st.markdown("### 📋 Posiciones Abiertas")
+
+    if not st.session_state.sim_trades:
+        st.info("No hay posiciones abiertas. Abre una operación arriba ☝️")
+    else:
+        for tr in st.session_state.sim_trades:
+            pnl      = _calc_pnl(tr)
+            tr["pnl"]= pnl
+            pnl_sign = "+" if pnl >= 0 else ""
+            bg       = "#0d3320" if pnl >= 0 else "#330d0d"
+            border   = "#00cc66" if pnl >= 0 else "#ff4444"
+            icon     = "🟢" if tr["type"] == "BUY" else "🔴"
+
+            sl_str = f"SL ${tr['sl']:,.2f}" if tr["sl"] else "Sin SL"
+            tp_str = f"TP ${tr['tp']:,.2f}" if tr["tp"] else "Sin TP"
+
+            col_info, col_close = st.columns([5, 1])
+            with col_info:
+                components.html(f"""
+                <div style="background:{bg}; border:1px solid {border}; border-radius:8px;
+                            padding:10px 16px; margin-bottom:4px; font-family:monospace;">
+                  <span style="font-size:1.1em; font-weight:700; color:{border};">
+                    {icon} #{tr['id']} {tr['type']}
+                  </span>
+                  &nbsp;&nbsp;
+                  <span style="color:#ccc;">Entrada:</span>
+                  <span style="color:#fff; font-weight:600;">${tr['entry_price']:,.2f}</span>
+                  &nbsp;→&nbsp;
+                  <span style="color:#ccc;">Actual:</span>
+                  <span style="color:#fff; font-weight:600;">${live_price:,.2f}</span>
+                  &nbsp;&nbsp;|&nbsp;&nbsp;
+                  <span style="color:#aaa;">{tr['lots']} lote(s) · {tr['open_time']}</span>
+                  &nbsp;&nbsp;|&nbsp;&nbsp;
+                  <span style="color:#aaa;">{sl_str} &nbsp; {tp_str}</span>
+                  <br/>
+                  <span style="font-size:1.3em; font-weight:800; color:{border};">
+                    P&amp;L: {pnl_sign}${pnl:,.2f}
+                  </span>
+                </div>
+                """, height=80)
+            with col_close:
+                if st.button(f"❌ Cerrar #{tr['id']}", key=f"close_{tr['id']}",
+                             use_container_width=True):
+                    tr["close_price"]  = live_price
+                    tr["close_time"]   = datetime.now().strftime("%H:%M:%S")
+                    tr["close_reason"] = "Manual"
+                    st.session_state.sim_balance += pnl
+                    st.session_state.sim_history.insert(0, tr)
+                    st.session_state.sim_trades.remove(tr)
+                    sign = "ganaste" if pnl >= 0 else "perdiste"
+                    st.toast(f"Posición #{tr['id']} cerrada — {sign} ${abs(pnl):,.2f}", icon="💰")
+                    st.rerun()
+
+    st.markdown("---")
+
+    # ────────────────────────────────────────────────────────────────────────
+    # HISTORIAL
+    # ────────────────────────────────────────────────────────────────────────
+    st.markdown("### 📜 Historial de Operaciones")
+
+    col_reset, col_export = st.columns([1, 5])
+    with col_reset:
+        if st.button("🔄 Reiniciar simulador", key="sim_reset"):
+            st.session_state.sim_balance  = 10_000.0
+            st.session_state.sim_trades   = []
+            st.session_state.sim_history  = []
+            st.session_state.sim_trade_id = 1
+            st.toast("Simulador reiniciado — balance restablecido a $10,000", icon="🔄")
+            st.rerun()
+
+    if not st.session_state.sim_history:
+        st.info("Aún no has cerrado ninguna operación.")
+    else:
+        wins   = [t for t in st.session_state.sim_history if t["pnl"] >= 0]
+        losses = [t for t in st.session_state.sim_history if t["pnl"] <  0]
+        total_pnl = sum(t["pnl"] for t in st.session_state.sim_history)
+
+        h1, h2, h3, h4 = st.columns(4)
+        h1.metric("✅ Ganadoras", len(wins))
+        h2.metric("❌ Perdedoras", len(losses))
+        wr = len(wins) / len(st.session_state.sim_history) * 100
+        h3.metric("🎯 Win Rate", f"{wr:.1f}%")
+        h4.metric("💵 P&L Total", f"${total_pnl:+,.2f}")
+
+        rows = []
+        for t in st.session_state.sim_history[:20]:
+            rows.append({
+                "#":        t["id"],
+                "Tipo":     t["type"],
+                "Entrada":  f"${t['entry_price']:,.2f}",
+                "Cierre":   f"${t.get('close_price', 0):,.2f}",
+                "Lotes":    t["lots"],
+                "P&L":      f"${t['pnl']:+,.2f}",
+                "Razón":    t.get("close_reason", "—"),
+                "Hora":     t.get("close_time", "—"),
+            })
+        df_hist = pd.DataFrame(rows)
+
+        def _color_pnl(val):
+            if isinstance(val, str) and val.startswith("$"):
+                num = float(val.replace("$", "").replace(",", "").replace("+", ""))
+                color = "#00cc66" if num >= 0 else "#ff4444"
+                return f"color: {color}; font-weight: bold"
+            return ""
+
+        st.dataframe(
+            df_hist.style.applymap(_color_pnl, subset=["P&L"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def _render_performance_tab(tracker_path: str = "signals_history.json"):
     """
     Renderiza la pestaña completa de rendimiento de señales.
@@ -1956,11 +2239,12 @@ def main():
         _send_and_render_mt_signal(data, sidebar_opts["mt_cfg"])
 
     # ── Pestañas ──────────────────────────────────────────────
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📉 Gráfico",
         "🔬 Características",
         "📰 Noticias",
         "📈 Rendimiento",
+        "🎮 Simulador",
     ])
 
     with tab1:
@@ -1979,6 +2263,9 @@ def main():
 
     with tab4:
         _render_performance_tab("signals_history.json")
+
+    with tab5:
+        _render_simulator_tab(data)
 
     # ── Footer: timestamp + auto-refresh JS ──────────────────
     st.markdown("---")
