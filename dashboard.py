@@ -459,6 +459,32 @@ def _get_next_event_str() -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# جلب السعر الحي من yfinance (1m interval) — أقل تأخيراً
+# ─────────────────────────────────────────────────────────────
+@st.cache_data(ttl=60, show_spinner=False)
+def _get_live_price(mode: str) -> tuple:
+    """
+    يرجع (سعر_حي, مصدر_النص).
+    في live mode: يجيب آخر دقيقة من yfinance → تأخير < 2 دقيقة.
+    في mock mode: يرجع None عشان نستخدم سعر الموديل.
+    """
+    if mode != "live":
+        return None, "mock"
+    try:
+        import yfinance as yf
+        df = yf.download("GC=F", period="1d", interval="1m",
+                         progress=False, auto_adjust=True)
+        if df is not None and len(df) > 0:
+            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+            price = float(df["Close"].dropna().iloc[-1])
+            ts    = df.index[-1].strftime("%H:%M")
+            return price, f"yfinance 1m · {ts}"
+    except Exception:
+        pass
+    return None, "—"
+
+
+# ─────────────────────────────────────────────────────────────
 # Tarjetas de señal principal — LANZAMIENTO NUEVO
 # ─────────────────────────────────────────────────────────────
 def _render_signal_cards(data: dict, news_score: float = 0.0):
@@ -467,12 +493,27 @@ def _render_signal_cards(data: dict, news_score: float = 0.0):
     bt_res   = data["bt_res"]
 
     # Última señal
-    last_sig   = int(results.signals.iloc[-1])
-    last_conf  = float(results.confidence.iloc[-1])
+    last_sig    = int(results.signals.iloc[-1])
+    last_conf   = float(results.confidence.iloc[-1])
     last_regime = int(results.regimes.iloc[-1])
-    last_price  = float(df_ind["Close"].iloc[-1])
+
+    # ── السعر: نحاول نجيب الحي أولاً ──────────────────────────
+    mode = st.session_state.get("data_mode", "live")
+    live_price, price_src = _get_live_price(mode)
+
+    model_price = float(df_ind["Close"].iloc[-1])
     prev_price  = float(df_ind["Close"].iloc[-2])
-    price_chg   = (last_price - prev_price) / prev_price
+
+    if live_price is not None:
+        last_price = live_price
+        price_label = f"${last_price:,.2f}"
+        price_note  = f"<span style='font-size:0.75em;color:#888;'>⏱ {price_src}</span>"
+    else:
+        last_price  = model_price
+        price_label = f"${last_price:,.2f}"
+        price_note  = "<span style='font-size:0.75em;color:#888;'>⏱ modelo (mock)</span>"
+
+    price_chg = (last_price - prev_price) / prev_price
 
     sig_map     = {1: "BUY 🟢", -1: "SELL 🔴", 0: "NEUTRAL ⚪"}
     regime_map  = {0: "Bajista 🔴", 1: "Lateral ⚪", 2: "Alcista 🟢"}
@@ -498,7 +539,10 @@ def _render_signal_cards(data: dict, news_score: float = 0.0):
             f"""<div style="background:#1a1a2e;border:2px solid {sig_color};border-radius:12px;
                 padding:20px;text-align:center;">
                 <div style="font-size:2em;font-weight:bold;color:{sig_color};">{sig_text}</div>
-                <div style="font-size:1.1em;color:#e0c97f;margin-top:8px;">Precio: ${last_price:,.2f}</div>
+                <div style="font-size:1.2em;color:#e0c97f;margin-top:8px;font-weight:bold;">
+                  {price_label}
+                  &nbsp; {price_note}
+                </div>
                 <div style="font-size:0.95em;color:#aaaaaa;margin-top:4px;">
                 Confianza: <span style="color:#ffd700;font-weight:bold;">{last_conf:.0%}</span> |
                 Régimen: <span style="color:#ffd700;font-weight:bold;">{regime_map[last_regime]}</span>
@@ -1779,24 +1823,40 @@ def _render_trading_checklist(data: dict, news_score: float = 0.0):
     total  = len(checks)
     pct    = passed / total
 
+    # ── Condiciones bloqueantes (veto individual) ──────────────
+    # Aunque pasen 6/7, estas condiciones anulan ENTRADA PERMITIDA
+    hard_veto = not cal_ok          # evento HIGH impact inminente
+    conf_veto = not conf_ok         # confianza < 55%
+
     # ── Renderizar ─────────────────────────────────────────────
     st.markdown("### 📋 Checklist de Trading Diario")
 
     # Tarjeta de veredicto final
-    if pct >= 6/7:
+    if hard_veto:
+        # Veto absoluto por calendario económico
+        verdict_bg    = "#3d0000"
+        verdict_border= "#ff4444"
+        verdict_icon  = "🚫"
+        verdict_text  = "ESPERAR — EVENTO DE ALTO IMPACTO"
+        verdict_color = "#ff4444"
+        verdict_sub   = "Evento económico inminente — NO operar hasta que pase"
+    elif pct >= 6/7 and not conf_veto:
         verdict_bg    = "#003d1a"
         verdict_border= "#00cc66"
         verdict_icon  = "✅"
         verdict_text  = "ENTRADA PERMITIDA"
         verdict_color = "#00ff88"
         verdict_sub   = f"Todas las condiciones favorables ({passed}/{total})"
-    elif pct >= 4/7:
+    elif pct >= 4/7 or (pct >= 6/7 and conf_veto):
         verdict_bg    = "#1a1a00"
         verdict_border= "#ffaa00"
         verdict_icon  = "⚠️"
         verdict_text  = "PROCEDER CON PRECAUCIÓN"
         verdict_color = "#ffdd00"
-        verdict_sub   = f"{passed}/{total} condiciones cumplidas — reduce el tamaño de lote"
+        if conf_veto:
+            verdict_sub = f"Confianza baja ({last_conf:.0%}) — reduce el tamaño de lote a la mitad"
+        else:
+            verdict_sub = f"{passed}/{total} condiciones cumplidas — reduce el tamaño de lote"
     else:
         verdict_bg    = "#3d0000"
         verdict_border= "#ff4444"
