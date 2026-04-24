@@ -1518,7 +1518,34 @@ def _load_performance_data(tracker_path: str) -> tuple:
         return None, None
 
 
-_SIM_STATE_FILE = Path(__file__).parent / "simulator_state.json"
+_SIM_STATE_FILE   = Path(__file__).parent / "simulator_state.json"
+_SIM_HISTORY_FILE = Path(__file__).parent / "simulator_history.csv"
+
+
+def _sim_append_to_csv(trade: dict):
+    """يضيف الصفقة المغلقة إلى CSV تراكمي — لا يُحذف أبداً."""
+    try:
+        row = {
+            "fecha":        datetime.now().strftime("%Y-%m-%d"),
+            "id":           trade["id"],
+            "tipo":         trade["type"],
+            "entrada":      trade["entry_price"],
+            "cierre":       trade.get("close_price", ""),
+            "lotes":        trade["lots"],
+            "pnl":          trade["pnl"],
+            "razon":        trade.get("close_reason", "Manual"),
+            "hora_apertura":trade.get("open_time", ""),
+            "hora_cierre":  trade.get("close_time", ""),
+        }
+        write_header = not _SIM_HISTORY_FILE.exists()
+        with open(_SIM_HISTORY_FILE, "a", encoding="utf-8", newline="") as f:
+            import csv
+            w = csv.DictWriter(f, fieldnames=row.keys())
+            if write_header:
+                w.writeheader()
+            w.writerow(row)
+    except Exception:
+        pass
 
 def _sim_save():
     """يحفظ حالة السيميوليتر في ملف JSON — يبقى بعد أي refresh."""
@@ -1615,6 +1642,7 @@ def _render_simulator_tab(data: dict):
     for tr in closed_auto:
         if tr in st.session_state.sim_trades:
             st.session_state.sim_trades.remove(tr)
+        _sim_append_to_csv(tr)
     if closed_auto:
         reasons = ", ".join(f"{t['close_reason']} #{t['id']}" for t in closed_auto)
         _sim_save()
@@ -1773,6 +1801,7 @@ def _render_simulator_tab(data: dict):
                     st.session_state.sim_balance += pnl
                     st.session_state.sim_history.insert(0, tr)
                     st.session_state.sim_trades.remove(tr)
+                    _sim_append_to_csv(tr)
                     _sim_save()
                     sign = "ganaste" if pnl >= 0 else "perdiste"
                     st.toast(f"Posición #{tr['id']} cerrada — {sign} ${abs(pnl):,.2f}", icon="💰")
@@ -1785,7 +1814,7 @@ def _render_simulator_tab(data: dict):
     # ────────────────────────────────────────────────────────────────────────
     st.markdown("### 📜 Historial de Operaciones")
 
-    col_reset, col_export = st.columns([1, 5])
+    col_reset, col_export = st.columns([1, 2])
     with col_reset:
         if st.button("🔄 Reiniciar simulador", key="sim_reset"):
             st.session_state.sim_balance  = 10_000.0
@@ -1796,8 +1825,29 @@ def _render_simulator_tab(data: dict):
             st.toast("Simulador reiniciado — balance restablecido a $10,000", icon="🔄")
             st.rerun()
 
+    # ── زر تحميل السجل الكامل (CSV) ─────────────────────────────
+    with col_export:
+        if _SIM_HISTORY_FILE.exists():
+            with open(_SIM_HISTORY_FILE, "rb") as f:
+                st.download_button(
+                    label="📥 Descargar historial completo (CSV)",
+                    data=f.read(),
+                    file_name="simulator_history.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+
     if not st.session_state.sim_history:
-        st.info("Aún no has cerrado ninguna operación.")
+        # حاول تحمّل من CSV لو الجلسة الحالية فارغة
+        if _SIM_HISTORY_FILE.exists():
+            try:
+                df_csv = pd.read_csv(_SIM_HISTORY_FILE)
+                st.caption(f"📂 {len(df_csv)} operaciones en el historial guardado")
+                st.dataframe(df_csv, use_container_width=True, hide_index=True)
+            except Exception:
+                st.info("Aún no has cerrado ninguna operación.")
+        else:
+            st.info("Aún no has cerrado ninguna operación.")
     else:
         wins   = [t for t in st.session_state.sim_history if t["pnl"] >= 0]
         losses = [t for t in st.session_state.sim_history if t["pnl"] <  0]
@@ -1832,7 +1882,7 @@ def _render_simulator_tab(data: dict):
             return ""
 
         st.dataframe(
-            df_hist.style.applymap(_color_pnl, subset=["P&L"]),
+            df_hist.style.map(_color_pnl, subset=["P&L"]),
             use_container_width=True,
             hide_index=True,
         )
