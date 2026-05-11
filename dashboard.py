@@ -194,6 +194,7 @@ def load_model_and_data(mode: str = "mock", n_rows: int = 500):
         "bt_res":    bt_res,
         "trades_df": trades_df,
         "ensemble":  ensemble,
+        "mode":      mode,          # ← Bug 1 fix: modo disponible en todo el data dict
         "signal": {
             "action": sig_action,
             "sl":     round(sig_sl, 2),
@@ -1518,69 +1519,108 @@ def _load_performance_data(tracker_path: str) -> tuple:
         return None, None
 
 
-_SIM_STATE_FILE   = Path(__file__).parent / "simulator_state.json"
-_SIM_HISTORY_FILE = Path(__file__).parent / "simulator_history.csv"
+# ─────────────────────────────────────────────────────────────
+# مسارات تخزين السيميوليتر
+# /tmp/gold_sim/ → يبقى طول جلسة السيرفر (أكثر ثباتاً من مجلد السكريبت)
+# ─────────────────────────────────────────────────────────────
+import tempfile as _tmpmod
+_SIM_DIR          = Path(_tmpmod.gettempdir()) / "gold_sim"
+_SIM_DIR.mkdir(parents=True, exist_ok=True)
+_SIM_STATE_FILE   = _SIM_DIR / "simulator_state.json"
+_SIM_HISTORY_FILE = _SIM_DIR / "simulator_history.csv"
+
+# نسخة احتياطية ثانوية بجانب السكريبت (تُقرأ فقط لو /tmp فارغ)
+_SIM_LOCAL_BACKUP = Path(__file__).parent / "simulator_state.json"
+
+
+def _sim_state_to_dict() -> dict:
+    return {
+        "balance":         st.session_state.sim_balance,
+        "initial_balance": st.session_state.get("sim_initial_balance", 10_000.0),
+        "trades":          st.session_state.sim_trades,
+        "history":         st.session_state.sim_history,
+        "trade_id":        st.session_state.sim_trade_id,
+        "saved_at":        datetime.now().isoformat(),
+    }
+
+
+def _sim_apply_dict(s: dict):
+    st.session_state.sim_balance         = float(s.get("balance",         10_000.0))
+    st.session_state.sim_initial_balance = float(s.get("initial_balance", 10_000.0))
+    st.session_state.sim_trades          = s.get("trades",   [])
+    st.session_state.sim_history         = s.get("history",  [])
+    st.session_state.sim_trade_id        = int(s.get("trade_id", 1))
+
+
+def _sim_save():
+    """يحفظ الحالة في /tmp/ (سريع) وفي مجلد المشروع (نسخة احتياطية)."""
+    try:
+        state = _sim_state_to_dict()
+        for path in (_SIM_STATE_FILE, _SIM_LOCAL_BACKUP):
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(state, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _sim_load():
+    """
+    يحمّل الحالة بالترتيب التالي:
+    1. session_state (نفس الجلسة — أسرع)
+    2. /tmp/gold_sim/simulator_state.json
+    3. مجلد السكريبت (نسخة احتياطية محلية)
+    4. صفر من البداية
+    """
+    if "sim_balance" in st.session_state:
+        return  # محمّل بالفعل
+
+    for path in (_SIM_STATE_FILE, _SIM_LOCAL_BACKUP):
+        try:
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    s = json.load(f)
+                _sim_apply_dict(s)
+                # انسخ للمسار الآخر لو ناقص
+                _sim_save()
+                return
+        except Exception:
+            continue
+
+    # لا يوجد ملف — ابدأ من صفر
+    st.session_state.sim_balance         = 10_000.0
+    st.session_state.sim_initial_balance = 10_000.0
+    st.session_state.sim_trades          = []
+    st.session_state.sim_history         = []
+    st.session_state.sim_trade_id        = 1
 
 
 def _sim_append_to_csv(trade: dict):
-    """يضيف الصفقة المغلقة إلى CSV تراكمي — لا يُحذف أبداً."""
+    """يضيف الصفقة المغلقة إلى CSV تراكمي — append فقط، لا حذف."""
+    import csv
+    row = {
+        "fecha":         datetime.now().strftime("%Y-%m-%d"),
+        "id":            trade["id"],
+        "tipo":          trade["type"],
+        "entrada":       trade["entry_price"],
+        "cierre":        trade.get("close_price", ""),
+        "lotes":         trade["lots"],
+        "pnl":           round(trade["pnl"], 2),
+        "razon":         trade.get("close_reason", "Manual"),
+        "hora_apertura": trade.get("open_time", ""),
+        "hora_cierre":   trade.get("close_time", ""),
+    }
     try:
-        row = {
-            "fecha":        datetime.now().strftime("%Y-%m-%d"),
-            "id":           trade["id"],
-            "tipo":         trade["type"],
-            "entrada":      trade["entry_price"],
-            "cierre":       trade.get("close_price", ""),
-            "lotes":        trade["lots"],
-            "pnl":          trade["pnl"],
-            "razon":        trade.get("close_reason", "Manual"),
-            "hora_apertura":trade.get("open_time", ""),
-            "hora_cierre":  trade.get("close_time", ""),
-        }
         write_header = not _SIM_HISTORY_FILE.exists()
         with open(_SIM_HISTORY_FILE, "a", encoding="utf-8", newline="") as f:
-            import csv
             w = csv.DictWriter(f, fieldnames=row.keys())
             if write_header:
                 w.writeheader()
             w.writerow(row)
     except Exception:
         pass
-
-def _sim_save():
-    """يحفظ حالة السيميوليتر في ملف JSON — يبقى بعد أي refresh."""
-    try:
-        state = {
-            "balance":  st.session_state.sim_balance,
-            "trades":   st.session_state.sim_trades,
-            "history":  st.session_state.sim_history,
-            "trade_id": st.session_state.sim_trade_id,
-        }
-        with open(_SIM_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-def _sim_load():
-    """يحمّل الحالة المحفوظة — إذا ما في ملف يبدأ من صفر."""
-    if "sim_balance" in st.session_state:
-        return  # محمّل من قبل في نفس الجلسة
-    try:
-        if _SIM_STATE_FILE.exists():
-            with open(_SIM_STATE_FILE, "r", encoding="utf-8") as f:
-                s = json.load(f)
-            st.session_state.sim_balance  = float(s.get("balance",  10_000.0))
-            st.session_state.sim_trades   = s.get("trades",   [])
-            st.session_state.sim_history  = s.get("history",  [])
-            st.session_state.sim_trade_id = int(s.get("trade_id", 1))
-            return
-    except Exception:
-        pass
-    # قيم افتراضية
-    st.session_state.sim_balance  = 10_000.0
-    st.session_state.sim_trades   = []
-    st.session_state.sim_history  = []
-    st.session_state.sim_trade_id = 1
 
 
 @st.fragment(run_every="5s")
@@ -1657,12 +1697,23 @@ def _render_simulator_tab(data: dict):
     st.markdown("## 🎮 Simulador de Trading — Paper Trading")
     st.caption("Practica con dinero virtual usando el precio real del mercado. Sin riesgo real.")
 
+    # ── Aviso si el estado se cargó de cero (no había archivo guardado) ──────
+    if not _SIM_STATE_FILE.exists() and not _SIM_LOCAL_BACKUP.exists():
+        st.warning(
+            "⚠️ **No se encontró estado guardado** — el simulador comenzó desde cero.\n\n"
+            "Si tenías operaciones abiertas, usa el botón **📤 Restaurar backup** de abajo "
+            "para recuperarlas desde tu último archivo guardado.",
+            icon="⚠️"
+        )
+
     # ── Métricas principales ─────────────────────────────────────────────────
+    init_bal  = st.session_state.get("sim_initial_balance", 10_000.0)
+    net_delta = equity - init_bal   # Bug 3 fix: comparar con balance inicial real
+
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("💰 Balance", f"${st.session_state.sim_balance:,.2f}")
     m2.metric("📊 Equity",  f"${equity:,.2f}",
-              delta=f"{equity - 10_000:.2f}" if equity != st.session_state.sim_balance else None)
-    pnl_color = "normal" if total_open_pnl >= 0 else "inverse"
+              delta=f"{net_delta:+.2f}" if net_delta != 0 else None)
     m3.metric("📈 P&L Abierto", f"${total_open_pnl:,.2f}", delta=f"{total_open_pnl:.2f}")
     m4.metric("🔢 Posiciones", len(st.session_state.sim_trades))
     m5.metric("💵 Precio Vivo", f"${live_price:,.2f}", help=live_src)
@@ -1814,35 +1865,62 @@ def _render_simulator_tab(data: dict):
     # ────────────────────────────────────────────────────────────────────────
     st.markdown("### 📜 Historial de Operaciones")
 
-    col_reset, col_export = st.columns([1, 2])
-    with col_reset:
-        if st.button("🔄 Reiniciar simulador", key="sim_reset"):
-            st.session_state.sim_balance  = 10_000.0
-            st.session_state.sim_trades   = []
-            st.session_state.sim_history  = []
-            st.session_state.sim_trade_id = 1
+    # ── Botones de acción: Reset / Backup / Restore ──────────────────────────
+    c_reset, c_backup, c_restore = st.columns([1, 1, 1])
+
+    with c_reset:
+        if st.button("🔄 Reiniciar", key="sim_reset", use_container_width=True):
+            st.session_state.sim_balance         = 10_000.0
+            st.session_state.sim_initial_balance = 10_000.0
+            st.session_state.sim_trades          = []
+            st.session_state.sim_history         = []
+            st.session_state.sim_trade_id        = 1
             _sim_save()
-            st.toast("Simulador reiniciado — balance restablecido a $10,000", icon="🔄")
+            st.toast("Simulador reiniciado — balance $10,000", icon="🔄")
             st.rerun()
 
-    # ── زر تحميل السجل الكامل (CSV) ─────────────────────────────
-    with col_export:
-        if _SIM_HISTORY_FILE.exists():
-            with open(_SIM_HISTORY_FILE, "rb") as f:
-                st.download_button(
-                    label="📥 Descargar historial completo (CSV)",
-                    data=f.read(),
-                    file_name="simulator_history.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
+    with c_backup:
+        # ── 💾 Descargar backup JSON completo (balance + trades + historial) ──
+        backup_json = json.dumps(_sim_state_to_dict(), ensure_ascii=False, indent=2).encode("utf-8")
+        st.download_button(
+            label="💾 Guardar backup",
+            data=backup_json,
+            file_name=f"sim_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+            mime="application/json",
+            use_container_width=True,
+            help="Descarga el estado completo: balance, posiciones abiertas e historial",
+        )
+
+    with c_restore:
+        # ── 📤 Restaurar desde backup JSON ─────────────────────────────────
+        uploaded = st.file_uploader(
+            "📤 Restaurar backup",
+            type=["json"],
+            key="sim_restore_upload",
+            label_visibility="collapsed",
+            help="Sube un archivo sim_backup_*.json para restaurar tu estado anterior",
+        )
+        if uploaded is not None:
+            try:
+                s = json.load(uploaded)
+                _sim_apply_dict(s)
+                _sim_save()
+                st.toast("✅ Estado restaurado correctamente", icon="📤")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error al restaurar: {e}")
+
+    st.caption(
+        f"💡 Descarga el backup regularmente — en Streamlit Cloud el estado "
+        f"se reinicia si hay un nuevo deploy."
+    )
 
     if not st.session_state.sim_history:
         # حاول تحمّل من CSV لو الجلسة الحالية فارغة
         if _SIM_HISTORY_FILE.exists():
             try:
                 df_csv = pd.read_csv(_SIM_HISTORY_FILE)
-                st.caption(f"📂 {len(df_csv)} operaciones en el historial guardado")
+                st.caption(f"📂 {len(df_csv)} operaciones en el historial de esta sesión")
                 st.dataframe(df_csv, use_container_width=True, hide_index=True)
             except Exception:
                 st.info("Aún no has cerrado ninguna operación.")
