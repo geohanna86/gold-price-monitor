@@ -840,9 +840,13 @@ def _render_price_chart(data: dict):
           "save_image": true,
           "container_id": "tradingview_gold",
           "studies": [
-            "MASimple@tv-basicstudies",
+            {{"id": "MAExp@tv-basicstudies", "inputs": {{"length": 9}}}},
+            {{"id": "MAExp@tv-basicstudies", "inputs": {{"length": 21}}}},
+            {{"id": "MAExp@tv-basicstudies", "inputs": {{"length": 50}}}},
             "RSI@tv-basicstudies",
-            "MACD@tv-basicstudies"
+            "MACD@tv-basicstudies",
+            "OBV@tv-basicstudies",
+            "ATR@tv-basicstudies"
           ],
           "show_popup_button": true,
           "popup_width": "1000",
