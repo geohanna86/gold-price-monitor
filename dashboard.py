@@ -1691,49 +1691,61 @@ def _render_simulator_tab(data: dict):
     total_open_pnl = sum(t["pnl"] for t in st.session_state.sim_trades)
     equity         = st.session_state.sim_balance + total_open_pnl
 
-    # ────────────────────────────────────────────────────────────────────────
-    # ENCABEZADO
-    # ────────────────────────────────────────────────────────────────────────
-    st.markdown("## 🎮 Simulador de Trading — Paper Trading")
-    st.caption("Practica con dinero virtual usando el precio real del mercado. Sin riesgo real.")
+    # ── Encabezado compacto ──────────────────────────────────────────────────
+    import streamlit.components.v1 as _c
 
-    # ── Aviso si el estado se cargó de cero (no había archivo guardado) ──────
+    # Aviso de estado perdido — una sola línea discreta
     if not _SIM_STATE_FILE.exists() and not _SIM_LOCAL_BACKUP.exists():
-        st.warning(
-            "⚠️ **No se encontró estado guardado** — el simulador comenzó desde cero.\n\n"
-            "Si tenías operaciones abiertas, usa el botón **📤 Restaurar backup** de abajo "
-            "para recuperarlas desde tu último archivo guardado.",
-            icon="⚠️"
-        )
+        st.caption("⚠️ Sin estado guardado — usa **📤 Restaurar backup** si tenías operaciones.")
 
-    # ── Métricas principales ─────────────────────────────────────────────────
+    # ── Métricas compactas en HTML (evita el corte de Streamlit) ─────────────
     init_bal  = st.session_state.get("sim_initial_balance", 10_000.0)
-    net_delta = equity - init_bal   # Bug 3 fix: comparar con balance inicial real
+    net_delta = equity - init_bal
+    delta_col = "#00cc66" if net_delta >= 0 else "#ff4444"
+    pnl_col   = "#00cc66" if total_open_pnl >= 0 else "#ff4444"
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("💰 Balance", f"${st.session_state.sim_balance:,.2f}")
-    m2.metric("📊 Equity",  f"${equity:,.2f}",
-              delta=f"{net_delta:+.2f}" if net_delta != 0 else None)
-    m3.metric("📈 P&L Abierto", f"${total_open_pnl:,.2f}", delta=f"{total_open_pnl:.2f}")
-    m4.metric("🔢 Posiciones", len(st.session_state.sim_trades))
-    m5.metric("💵 Precio Vivo", f"${live_price:,.2f}", help=live_src)
+    _metrics_data = [
+        ("💰 Balance",     f"${st.session_state.sim_balance:,.2f}", "#e0c97f",
+         "",                               ""),
+        ("📊 Equity",      f"${equity:,.2f}",                        "#fff",
+         f"{net_delta:+,.2f}" if net_delta != 0 else "",             delta_col),
+        ("📈 P&L Abierto", f"${total_open_pnl:,.2f}",               pnl_col,
+         f"{total_open_pnl:+,.2f}" if total_open_pnl != 0 else "",  pnl_col),
+        ("🔢 Posiciones",  str(len(st.session_state.sim_trades)),    "#fff",
+         "",                               ""),
+        ("💵 Precio Vivo", f"${live_price:,.2f}",                    "#ffd700",
+         live_src,                         "#666"),
+    ]
+    _cards_html = "".join(
+        '<div style="flex:1;background:#1a1a2e;border:1px solid #333;border-radius:6px;'
+        'padding:8px 10px;min-width:0;">'
+        '<div style="font-size:0.7em;color:#888;white-space:nowrap;overflow:hidden;'
+        f'text-overflow:ellipsis;">{lbl}</div>'
+        '<div style="font-size:1em;font-weight:700;white-space:nowrap;overflow:hidden;'
+        f'text-overflow:ellipsis;color:{col};">{val}</div>'
+        + (f'<div style="font-size:0.7em;color:{dcol};">{dval}</div>' if dval else "")
+        + '</div>'
+        for lbl, val, col, dval, dcol in _metrics_data
+    )
+    _c.html(
+        f'<div style="display:flex;gap:8px;margin-bottom:4px;">{_cards_html}</div>',
+        height=68,
+    )
 
     st.markdown("---")
 
-    # ────────────────────────────────────────────────────────────────────────
-    # PANEL DE APERTURA
-    # ────────────────────────────────────────────────────────────────────────
-    st.markdown("### 📂 Abrir Nueva Posición")
+    # ── Panel de apertura ────────────────────────────────────────────────────
+    st.markdown("**📂 Abrir Nueva Posición**")
 
-    # Sugerencia del modelo
+    # Sugerencia del modelo — una línea discreta
     signal_action = data.get("signal", {}).get("action", "HOLD")
     sl_suggest    = data.get("signal", {}).get("sl")
     tp_suggest    = data.get("signal", {}).get("tp")
 
     if signal_action in ("BUY", "SELL"):
         sig_icon = "🟢" if signal_action == "BUY" else "🔴"
-        st.info(f"{sig_icon} El modelo recomienda **{signal_action}** ahora — "
-                f"SL sugerido: **${sl_suggest:,.2f}** | TP sugerido: **${tp_suggest:,.2f}**")
+        st.caption(f"{sig_icon} Modelo: **{signal_action}** · "
+                   f"SL ${sl_suggest:,.2f} · TP ${tp_suggest:,.2f}")
 
     col_type, col_lots, col_sl, col_tp = st.columns([1, 1, 1, 1])
 
@@ -1800,10 +1812,7 @@ def _render_simulator_tab(data: dict):
 
     st.markdown("---")
 
-    # ────────────────────────────────────────────────────────────────────────
-    # POSICIONES ABIERTAS
-    # ────────────────────────────────────────────────────────────────────────
-    st.markdown("### 📋 Posiciones Abiertas")
+    st.markdown("**📋 Posiciones Abiertas**")
 
     if not st.session_state.sim_trades:
         st.info("No hay posiciones abiertas. Abre una operación arriba ☝️")
@@ -1860,10 +1869,7 @@ def _render_simulator_tab(data: dict):
 
     st.markdown("---")
 
-    # ────────────────────────────────────────────────────────────────────────
-    # HISTORIAL
-    # ────────────────────────────────────────────────────────────────────────
-    st.markdown("### 📜 Historial de Operaciones")
+    st.markdown("**📜 Historial de Operaciones**")
 
     # ── Botones de acción: Reset / Backup / Restore ──────────────────────────
     c_reset, c_backup, c_restore = st.columns([1, 1, 1])
