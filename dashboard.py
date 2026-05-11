@@ -819,7 +819,7 @@ def _render_price_chart(data: dict):
 
     # ── Widget de TradingView ─────────────────────────────────
     tv_html = f"""
-    <div id="tv_chart_container" style="height:620px;">
+    <div id="tv_chart_container" style="height:1100px;">
       <div class="tradingview-widget-container" style="height:100%;width:100%;">
         <div id="tradingview_gold" style="height:100%;width:100%;"></div>
         <script type="text/javascript"
@@ -849,14 +849,14 @@ def _render_price_chart(data: dict):
             "ATR@tv-basicstudies"
           ],
           "show_popup_button": true,
-          "popup_width": "1000",
-          "popup_height": "650"
+          "popup_width": "1200",
+          "popup_height": "900"
         }});
         </script>
       </div>
     </div>
     """
-    components.html(tv_html, height=640, scrolling=False)
+    components.html(tv_html, height=1120, scrolling=False)
 
     # ────── SECCIÓN: Niveles Clave ──────
     st.markdown("### 📍 Niveles Clave XAU/USD")
