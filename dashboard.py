@@ -1545,8 +1545,8 @@ def _sim_state_to_dict() -> dict:
 
 
 def _sim_apply_dict(s: dict):
-    st.session_state.sim_balance         = float(s.get("balance",         10_000.0))
-    st.session_state.sim_initial_balance = float(s.get("initial_balance", 10_000.0))
+    st.session_state.sim_balance         = float(s.get("balance",         1_000.0))
+    st.session_state.sim_initial_balance = float(s.get("initial_balance", 1_000.0))
     st.session_state.sim_trades          = s.get("trades",   [])
     st.session_state.sim_history         = s.get("history",  [])
     st.session_state.sim_trade_id        = int(s.get("trade_id", 1))
@@ -1590,8 +1590,8 @@ def _sim_load():
             continue
 
     # لا يوجد ملف — ابدأ من صفر
-    st.session_state.sim_balance         = 10_000.0
-    st.session_state.sim_initial_balance = 10_000.0
+    st.session_state.sim_balance         = 1_000.0
+    st.session_state.sim_initial_balance = 1_000.0
     st.session_state.sim_trades          = []
     st.session_state.sim_history         = []
     st.session_state.sim_trade_id        = 1
@@ -1876,8 +1876,8 @@ def _render_simulator_tab(data: dict):
 
     with c_reset:
         if st.button("🔄 Reiniciar", key="sim_reset", use_container_width=True):
-            st.session_state.sim_balance         = 10_000.0
-            st.session_state.sim_initial_balance = 10_000.0
+            st.session_state.sim_balance         = 1_000.0
+            st.session_state.sim_initial_balance = 1_000.0
             st.session_state.sim_trades          = []
             st.session_state.sim_history         = []
             st.session_state.sim_trade_id        = 1
@@ -1970,6 +1970,173 @@ def _render_simulator_tab(data: dict):
             use_container_width=True,
             hide_index=True,
         )
+
+
+def _render_entry_filters(data: dict):
+    """
+    8 فلاتر دخول/خروج احترافية على XAU/USD.
+    كل فلتر يعطي pass/fail + score مجمّع + نقطة دخول + SL + TP1 + TP2.
+    """
+    import streamlit.components.v1 as _cv1
+    from datetime import timezone
+
+    results  = data["results"]
+    df_ind   = data["df_ind"]
+    last_sig  = int(results.signals.iloc[-1])
+    last_conf = float(results.confidence.iloc[-1])
+
+    if last_sig == 0:
+        st.info("⚪ Señal NEUTRAL — sin filtros activos ahora.")
+        return
+
+    direction = "BUY" if last_sig == 1 else "SELL"
+    dir_color = "#00cc66" if direction == "BUY" else "#ff4444"
+
+    close     = float(df_ind["Close"].iloc[-1])
+    atr       = float(df_ind["ATR"].iloc[-1])  if "ATR" in df_ind.columns else 20.0
+    rsi       = float(df_ind["RSI"].iloc[-1])  if "RSI" in df_ind.columns else 50.0
+    atr_mean  = float(df_ind["ATR"].mean())    if "ATR" in df_ind.columns else 20.0
+    atr_ratio = atr / atr_mean if atr_mean > 0 else 1.0
+
+    def _ema(col):
+        return float(df_ind[col].iloc[-1]) if col in df_ind.columns else close
+    ema9  = _ema("EMA_9");  ema21 = _ema("EMA_21");  ema50 = _ema("EMA_50")
+
+    macd_hist = 0.0
+    for _mc in ("MACDh_12_26_9", "MACD_hist", "MACD_Hist"):
+        if _mc in df_ind.columns:
+            macd_hist = float(df_ind[_mc].iloc[-1]); break
+
+    obv_rising = False
+    if "OBV" in df_ind.columns and len(df_ind) >= 6:
+        obv_rising = float(df_ind["OBV"].iloc[-1]) > float(df_ind["OBV"].iloc[-6])
+
+    hour_utc = datetime.now(timezone.utc).hour
+    mode     = data.get("mode", "live")
+    lp, _    = _get_live_price(mode)
+    entry    = lp if lp else close
+
+    # ── 8 Filtros ─────────────────────────────────────────────────────────────
+    filters = []
+
+    if direction == "BUY":
+        ok = entry > ema9 and ema9 > ema21
+        desc = f"Precio > EMA9({ema9:,.0f}) > EMA21({ema21:,.0f})"
+    else:
+        ok = entry < ema9 and ema9 < ema21
+        desc = f"Precio < EMA9({ema9:,.0f}) < EMA21({ema21:,.0f})"
+    filters.append(("📈 Tendencia EMA 9/21", ok, desc))
+
+    if direction == "BUY":
+        ok = entry > ema50
+        desc = f"Precio ${entry:,.0f} > EMA50 ${ema50:,.0f}"
+    else:
+        ok = entry < ema50
+        desc = f"Precio ${entry:,.0f} < EMA50 ${ema50:,.0f}"
+    filters.append(("🏔️ EMA50 Estructura", ok, desc))
+
+    if direction == "BUY":
+        ok = 30 <= rsi <= 65
+        desc = f"RSI {rsi:.1f} — zona compra óptima: 30–65"
+    else:
+        ok = 35 <= rsi <= 70
+        desc = f"RSI {rsi:.1f} — zona venta óptima: 35–70"
+    filters.append(("📊 RSI Zona", ok, desc))
+
+    if direction == "BUY":
+        ok = macd_hist > 0
+    else:
+        ok = macd_hist < 0
+    filters.append(("🔄 MACD Histograma", ok, f"Histograma: {macd_hist:+.3f}"))
+
+    ok = 0.6 <= atr_ratio <= 1.8
+    filters.append(("⚡ Volatilidad ATR", ok,
+                    f"ATR {atr:.1f} = {atr_ratio:.2f}x media (óptimo: 0.6–1.8x)"))
+
+    if direction == "BUY":
+        ok = obv_rising
+        desc = "OBV subiendo — acumulación" if ok else "OBV bajando — sin acumulación"
+    else:
+        ok = not obv_rising
+        desc = "OBV bajando — distribución" if ok else "OBV subiendo — sin distribución"
+    filters.append(("📦 OBV Volumen", ok, desc))
+
+    ok = last_conf >= 0.60
+    filters.append(("🤖 Confianza Modelo", ok,
+                    f"Confianza ensemble: {last_conf:.0%} — mínimo: 60%"))
+
+    ok = 8 <= hour_utc < 22
+    sess = "London/NY/Overlap ✔" if ok else "Asiática — baja liquidez"
+    filters.append(("🕐 Sesión Activa", ok, f"UTC {hour_utc:02d}:xx — {sess}"))
+
+    # ── Score ─────────────────────────────────────────────────────────────────
+    passed = sum(1 for _, o, _ in filters if o)
+    score  = passed / len(filters)
+    if score >= 0.75:
+        verdict, v_col = "ENTRADA FUERTE",  "#00cc66"
+    elif score >= 0.55:
+        verdict, v_col = "ENTRADA POSIBLE", "#ffd700"
+    else:
+        verdict, v_col = "ESPERAR",         "#ff4444"
+
+    # ── Niveles ATR-based ─────────────────────────────────────────────────────
+    sl_d, tp1_d, tp2_d = atr * 1.5, atr * 2.0, atr * 3.5
+    if direction == "BUY":
+        sl  = entry - sl_d;  tp1 = entry + tp1_d;  tp2 = entry + tp2_d
+    else:
+        sl  = entry + sl_d;  tp1 = entry - tp1_d;  tp2 = entry - tp2_d
+    rr1 = abs(tp1 - entry) / sl_d if sl_d > 0 else 0
+    rr2 = abs(tp2 - entry) / sl_d if sl_d > 0 else 0
+
+    # ── HTML ──────────────────────────────────────────────────────────────────
+    rows_html = "".join(
+        f'<div style="display:flex;align-items:center;gap:8px;padding:3px 0;'
+        f'border-bottom:1px solid #1e1e2e;">'
+        f'<span style="font-size:0.8em;min-width:18px;">{"✅" if ok else "❌"}</span>'
+        f'<span style="font-size:0.75em;color:{"#00cc66" if ok else "#ff4444"};'
+        f'min-width:165px;white-space:nowrap;">{name}</span>'
+        f'<span style="font-size:0.72em;color:#777;">{desc}</span>'
+        f'</div>'
+        for name, ok, desc in filters
+    )
+    levels_html = (
+        f'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">'
+        f'<div style="flex:1;min-width:90px;background:#0d1117;border:1px solid #ffd700;'
+        f'border-radius:5px;padding:6px 8px;text-align:center;">'
+        f'<div style="font-size:0.65em;color:#888;">🎯 Entrada</div>'
+        f'<div style="font-size:0.9em;font-weight:700;color:#ffd700;">${entry:,.2f}</div></div>'
+        f'<div style="flex:1;min-width:90px;background:#0d1117;border:1px solid #ff4444;'
+        f'border-radius:5px;padding:6px 8px;text-align:center;">'
+        f'<div style="font-size:0.65em;color:#888;">🛑 Stop Loss</div>'
+        f'<div style="font-size:0.9em;font-weight:700;color:#ff8888;">${sl:,.2f}</div>'
+        f'<div style="font-size:0.65em;color:#ff8888;">{abs(sl-entry)/entry*100:.2f}%</div></div>'
+        f'<div style="flex:1;min-width:90px;background:#0d1117;border:1px solid #00cc66;'
+        f'border-radius:5px;padding:6px 8px;text-align:center;">'
+        f'<div style="font-size:0.65em;color:#888;">🎯 TP1</div>'
+        f'<div style="font-size:0.9em;font-weight:700;color:#88ff88;">${tp1:,.2f}</div>'
+        f'<div style="font-size:0.65em;color:#88ff88;">R/R 1:{rr1:.1f}</div></div>'
+        f'<div style="flex:1;min-width:90px;background:#0d1117;border:1px solid #00aa44;'
+        f'border-radius:5px;padding:6px 8px;text-align:center;">'
+        f'<div style="font-size:0.65em;color:#888;">🏆 TP2</div>'
+        f'<div style="font-size:0.9em;font-weight:700;color:#55ee88;">${tp2:,.2f}</div>'
+        f'<div style="font-size:0.65em;color:#55ee88;">R/R 1:{rr2:.1f}</div></div>'
+        f'</div>'
+    )
+    pct = int(score * 100)
+    _cv1.html(
+        f'<div style="background:#0d1117;border:1px solid {dir_color};border-radius:8px;'
+        f'padding:12px 14px;font-family:monospace;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;'
+        f'margin-bottom:6px;">'
+        f'<span style="font-size:0.95em;font-weight:700;color:{dir_color};">'
+        f'{direction} — Filtros de Entrada XAU/USD</span>'
+        f'<span style="font-size:1em;font-weight:800;color:{v_col};">'
+        f'{verdict} &nbsp; {passed}/{len(filters)}</span></div>'
+        f'<div style="background:#111;border-radius:3px;height:5px;margin-bottom:8px;">'
+        f'<div style="background:{v_col};width:{pct}%;height:5px;border-radius:3px;"></div></div>'
+        f'{rows_html}{levels_html}</div>',
+        height=430,
+    )
 
 
 def _render_performance_tab(tracker_path: str = "signals_history.json"):
@@ -2449,6 +2616,11 @@ def main():
 
     # ── Checklist de Trading Diario ──────────────────────────
     _render_trading_checklist(data, news_score=news_score)
+
+    # ── Filtros de Entrada ────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🎯 Filtros de Entrada — XAU/USD")
+    _render_entry_filters(data)
 
     st.markdown("---")
 
