@@ -843,10 +843,10 @@ def _render_price_chart(data: dict):
             {{"id": "MAExp@tv-basicstudies", "inputs": {{"length": 9}}}},
             {{"id": "MAExp@tv-basicstudies", "inputs": {{"length": 21}}}},
             {{"id": "MAExp@tv-basicstudies", "inputs": {{"length": 50}}}},
-            "RSI@tv-basicstudies",
-            "MACD@tv-basicstudies",
-            "OBV@tv-basicstudies",
-            "ATR@tv-basicstudies"
+            {{"id": "RSI@tv-basicstudies"}},
+            {{"id": "MACD@tv-basicstudies"}},
+            {{"id": "OBV@tv-basicstudies"}},
+            {{"id": "ATR@tv-basicstudies"}}
           ],
           "show_popup_button": true,
           "popup_width": "1200",
